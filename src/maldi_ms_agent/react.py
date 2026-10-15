@@ -185,6 +185,9 @@ class Step:
     ok: bool
     payload: Dict[str, Any] = field(default_factory=dict)
     raw: str = ""
+    #: 卡壳提示。提示文本只进 LLM 上下文，不混进 observation，
+    #: 这样轨迹里的 observation 始终是工具的原始输出。
+    hint: str = ""
 
 
 @dataclass
@@ -243,6 +246,7 @@ class RunResult:
                     "args": s.args,
                     "ok": s.ok,
                     "observation": s.observation,
+                    "hint": s.hint,
                 }
                 for s in self.steps
             ],
@@ -285,6 +289,8 @@ def run_react(
     )
 
     parse_fail_streak = 0
+    last_sig = ""
+    repeat_streak = 0
     for i in range(max_steps):
         try:
             raw = llm.complete(messages)
@@ -339,8 +345,24 @@ def run_react(
         if verbose:
             print(f"[{i}] {thought}\n    → {name}({resolved})\n    {res.text}\n")
 
+        # 卡壳检测：同一个动作连着失败，模型很容易原地转圈（实测 glm-4-flash
+        # 曾对 load_dataset 重试 14 次直到步数耗尽）。这里只**提示**，不强制停止，
+        # 免得替模型做决定、污染评测。
+        sig = f"{name}({sorted(kwargs.items())})"
+        repeat_streak = repeat_streak + 1 if sig == last_sig else 1
+        last_sig = sig
+        hint = ""
+        if repeat_streak >= 3 and not res.ok:
+            hint = (
+                f"（提示：你已经连续 {repeat_streak} 次调用 `{name}` 且都没有成功。"
+                "请换一种做法；如果确实无法推进，就用 finish 说明卡在哪里。）"
+            )
+        run.steps[-1].hint = hint
+
         messages.append({"role": "assistant", "content": raw})
-        messages.append({"role": "user", "content": f"Observation: {res.text}"})
+        messages.append(
+            {"role": "user", "content": "Observation: " + res.text + ("\n" + hint if hint else "")}
+        )
 
         if name == "finish" and res.ok:
             run.conclusion = res.payload.get("conclusion", "")

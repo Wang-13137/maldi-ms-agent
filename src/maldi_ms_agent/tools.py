@@ -66,6 +66,24 @@ def _err(msg: str) -> ToolResult:
 
 
 def tool_load_dataset(session: AnalysisSession, data_dir: str = "", **kw) -> ToolResult:
+    """读取数据集。
+
+    踩过的坑：**不传 data_dir 且会话里已经有数据时，必须当成成功而不是报错**。
+    评测框架是注入数据的（合成谱没有文件目录），而提示词里又写着"先 load_dataset"，
+    于是真实模型会拿着空目录反复重试 14 次直到步数耗尽——整条轨迹就这么废了。
+    """
+    if not data_dir:
+        if session.dataset is not None:
+            return ToolResult(
+                "数据集已载入会话，无需再读取（本次未指定目录，直接沿用现有数据）：\n"
+                + session.summarize_dataset()
+                + "\n接下来可以调用 preprocess / detect_peaks。",
+                {"n_samples": len(session.sample_names), "data_dir": "", "already_loaded": True},
+            )
+        return _err(
+            "没有指定 data_dir，且会话里也没有已载入的数据集。"
+            "请提供数据目录路径；若数据已由评测框架注入，请直接进入 preprocess / detect_peaks。"
+        )
     try:
         session.load(data_dir)
     except Exception as exc:  # noqa: BLE001

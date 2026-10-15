@@ -28,9 +28,10 @@ Action: <工具名>(<参数>)
 {tools}
 
 ## 流程要求
-1. 先调用 load_dataset 读取数据集，再按 preprocess → detect_peaks → align_peaks
-   → build_features → differential_test → evaluate_panel 的顺序推进。
-   缺了前置步骤时工具会明确报错，按报错补上即可。
+1. 分析顺序是 preprocess → detect_peaks → align_peaks → build_features
+   → differential_test → evaluate_panel。缺了前置步骤时工具会明确报错，按报错补上即可。
+   **只有当任务给出了数据集目录时才需要调用 load_dataset**；
+   若提示"数据集已载入会话"，就不要再调用它，直接从 detect_peaks 开始。
 2. {evidence_rule}
 3. 数据集带批次信息时，调用 batch_effect_check 判断你看到的差异是生物信号还是
    采集批次带来的技术指纹。

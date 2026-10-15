@@ -226,6 +226,38 @@ def test_bad_agent_trajectory_is_recorded_not_blocked(base_cfg, synth_ds):
     assert "判别能力" in run.conclusion
 
 
+def test_load_dataset_is_idempotent_when_data_injected(base_cfg, synth_ds):
+    """没给目录但数据已在会话里时必须算成功——否则模型会拿空目录原地转圈。"""
+    session = AnalysisSession(cfg=dict(base_cfg))
+    session.attach_dataset(synth_ds)
+    tools = {t.name: t for t in build_tools(session)}
+    res, _ = call_tool(tools["load_dataset"], {})
+    assert res.ok
+    assert "已载入会话" in res.text and "detect_peaks" in res.text
+
+
+def test_load_dataset_without_dir_and_without_data_errors(base_cfg):
+    session = AnalysisSession(cfg=dict(base_cfg))
+    tools = {t.name: t for t in build_tools(session)}
+    res, _ = call_tool(tools["load_dataset"], {})
+    assert not res.ok
+    assert "data_dir" in res.text
+
+
+def test_stuck_loop_gets_a_hint(base_cfg, synth_ds):
+    """同一个动作连着失败三次 → 上下文里出现提示（但不强制停止）。"""
+    session = AnalysisSession(cfg=dict(base_cfg))  # 没有载入数据
+    run = run_react(
+        session,
+        ScriptedLLM(["Thought: 读数据。\nAction: load_dataset()"] * 4),
+        max_steps=4,
+    )
+    hints = [s.hint for s in run.steps]
+    assert hints[:2] == ["", ""]
+    assert hints[2] and "连续 3 次" in hints[2]
+    assert run.stopped_reason == "max_steps"  # 只提示，不替模型做决定
+
+
 def test_max_steps_truncates(base_cfg, synth_ds):
     session = AnalysisSession(cfg=dict(base_cfg))
     session.attach_dataset(synth_ds)
