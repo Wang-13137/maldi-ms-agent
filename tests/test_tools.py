@@ -109,6 +109,30 @@ def test_finish_requires_conclusion(base_cfg):
 # ---------------------------------------------------------------- 参数改动触发重算
 
 
+def test_evaluate_panel_tolerates_sizes_formats(base_cfg, synth_ds):
+    """真实模型写 sizes 的格式五花八门，都得容忍。
+
+    踩过的坑：早期版本用 int("[3") 直接报错，模型卡在这一步，
+    导致唯一有真信号的 T0-baseline 在三组消融里全部作废。
+    """
+    from maldi_ms_agent.tools import _parse_sizes
+
+    assert _parse_sizes("3,5,10") == [3, 5, 10]
+    assert _parse_sizes("[3, 5, 10]") == [3, 5, 10]
+    assert _parse_sizes("3，5，10") == [3, 5, 10]
+    assert _parse_sizes("3.0,5.0") == [3, 5]
+    assert _parse_sizes("") is None
+    assert _parse_sizes("abc") is None
+
+    s = _ready_session(base_cfg, synth_ds)
+    tools = {t.name: t for t in build_tools(s)}
+    for fmt in ("3,5,10", "[5, 10]", "5，10"):
+        r = tools["evaluate_panel"].func(sizes=fmt)
+        assert r.ok, f"sizes={fmt} 应当被接受：{r.text}"
+    bad = tools["evaluate_panel"].func(sizes="大中小")
+    assert not bad.ok
+
+
 def test_parameter_change_invalidates_downstream(base_cfg, synth_ds):
     """改归一化方式后必须重算峰检测（T3 参数敏感性靠这个）。"""
     s = _ready_session(base_cfg, synth_ds)

@@ -62,6 +62,24 @@ def _err(msg: str) -> ToolResult:
     return ToolResult(f"[错误] {msg}", {"error": msg})
 
 
+def _parse_sizes(sizes) -> list[int] | None:
+    """宽容地解析 panel 规模列表。
+
+    真实模型写出来的格式五花八门：``3,5,10`` / ``[3, 5, 10]`` / ``3，5，10`` /
+    ``3.0,5.0``。一律容忍，解析不了才返回 None。
+    """
+    s = str(sizes).strip()
+    # 去掉包裹符号与空白
+    s = s.strip("[](){}").replace("，", ",").replace(";", ",").replace(" ", "")
+    if not s:
+        return None
+    try:
+        out = [int(float(x)) for x in s.split(",") if x]
+    except ValueError:
+        return None
+    return [v for v in out if v > 0] or None
+
+
 # ---------------------------------------------------------------- 1. 读取
 
 
@@ -274,10 +292,11 @@ def tool_evaluate_panel(
     ``honest=True`` 时附带口径警示（A 组）；``False`` 时只给数字（B 组，用于消融）。
     """
     if sizes:
-        try:
-            parsed = [int(s) for s in str(sizes).replace("，", ",").split(",") if s.strip()]
-        except ValueError:
-            return _err(f"sizes 解析失败：{sizes}")
+        parsed = _parse_sizes(sizes)
+        if parsed is None:
+            # 踩过的坑：真实模型会写 sizes=[3, 5, 10, 20]（带方括号与空格），
+            # 早期版本直接 int("[3") 报错，模型就卡在这里整条任务作废。
+            return _err(f"sizes 解析失败：{sizes}；请写成 sizes=3,5,10,20 这样的整数列表")
         m_cfg = session.cfg.setdefault("modeling", {})
         if m_cfg.get("panel_sizes") != parsed:
             m_cfg["panel_sizes"] = parsed
