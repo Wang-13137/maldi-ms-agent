@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import sys
 from pathlib import Path
@@ -46,11 +47,23 @@ from maldi_ms_agent.synth import SynthConfig, make_synth_dataset, synth_config  
 
 
 @pytest.fixture(scope="session")
-def base_cfg() -> dict:
-    """pipeline 的默认配置，按合成谱特点调整峰检测参数。"""
+def base_cfg_raw() -> dict:
+    """只加载一次的配置模板（**不要直接用**，它会被测试改写）。"""
     if CFG_PATH is None:
         pytest.skip("找不到 pipeline 的 configs 目录")
     return synth_config(load_config(str(CFG_PATH)))
+
+
+@pytest.fixture
+def base_cfg(base_cfg_raw) -> dict:
+    """每个测试一份**深拷贝**的配置。
+
+    踩过的坑：``AnalysisSession(cfg=dict(base_cfg))`` 只是浅拷贝，嵌套的
+    ``preprocessing`` / ``peak_detection`` 子字典仍是同一个对象。于是前一个测试里
+    Agent 调了 ``preprocess(normalize=tic)``，后面的测试就会看到 normalization
+    已经是 tic，``invalidate`` 不再触发——参数失效重算的测试凭空失败。
+    """
+    return copy.deepcopy(base_cfg_raw)
 
 
 @pytest.fixture(scope="session")

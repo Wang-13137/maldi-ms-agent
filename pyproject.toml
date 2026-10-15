@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maldi-ms-agent"
+version = "0.2.0"
+description = "让智能体自主执行 MALDI-TOF 判别分析，并用扰动评测验证它不会虚报结论"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "numpy",
+    "scipy",
+    "scikit-learn",
+    "pandas",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+llm = ["openai>=1.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: 需要跑完整合成流水线（峰检测/对齐/建模），秒级到十秒级",
+]

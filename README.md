@@ -42,10 +42,58 @@ src/maldi_ms_agent/
 ├── tools.py     10 个工具；evaluate_panel 返回时附口径警示（可消融）
 ├── stats.py     permutation_test / batch_effect_check（pipeline 里原本没有）
 ├── synth.py     合成谱生成器，可控效应量与批次混淆（供公开复现）
-├── react.py     ReAct 骨架（M3）
+├── llm.py       LLM 后端：ScriptedLLM（离线）/ OpenAICompatLLM（任意兼容端点）
+├── prompts.py   ReAct 提示词；口径约束分 strict / loose 两版（可消融）
+├── react.py     ReAct 循环：Thought→Action→Observation，轨迹全量落盘
 ├── perturb.py   三类扰动（M4）
 └── tasks.py     任务集定义（M4）
 ```
+
+## 三·补 Agent 层（M3）
+
+手写 ReAct 循环（不套 LangChain / LangGraph）。理由：要评测的是**工具契约**与
+**提示词口径**各自的贡献，中间层越少越容易归因；而且循环本身只有几十行，
+自己写能完全控制轨迹格式，方便 M5 逐格比对。
+
+格式与停止条件：
+
+```
+Thought: <理由>
+Action:  工具名(参数=值)     → Observation: 工具返回的汇总统计
+...
+Action:  finish(conclusion=...)
+```
+
+- 停止：调用 `finish` / 达到 `max_steps` / 连续解析失败 / 工具异常；
+- **失败轨迹不被拦截，只被完整记录**——虚报本身就是评测对象；
+- 模型写出 `Final Answer:` 也会被兜底识别为 `finish`；
+- 解析失败会把错误回喂给模型让它自己纠正（最多重试 `max_parse_retries` 次）。
+
+### 口径约束拆成两处，可分别关掉
+
+这是消融设计的关键：约束既写在提示词里，也写在工具输出里，两者独立开关。
+
+| 开关 | 位置 | 关掉后的含义 |
+|---|---|---|
+| `strict` | 提示词（prompts.py） | 不再要求"报结论前先做置换检验" |
+| `honest` | 工具输出（tools.py） | `evaluate_panel` 不再附口径警示 |
+| `with_permutation` | 工具集（tools.py） | 工具箱里根本没有置换检验 |
+
+于是 M5 的四组对照就有了明确归因：
+
+| 组 | strict | honest | with_permutation | 想回答的问题 |
+|---|---|---|---|---|
+| A | ✅ | ✅ | ✅ | 全套约束下会不会虚报 |
+| B | ✅ | ❌ | ✅ | 少了工具层警示，提示词还能不能兜住 |
+| C | ✅ | ✅ | ❌ | 没工具可用时会不会自己想办法 |
+| D | ❌ | ✅ | ✅ | 提示词不提醒时，工具层警示够不够 |
+
+### 离线纪律
+
+本机没有可用的大模型 Key，所以 ReAct 默认跑在 `ScriptedLLM`（脚本回放）上。
+**离线脚本跑出的任何数字都不得写进简历、论文或 README 结论**，它只用于证明链路
+可跑通。拿到 Key 后用 `--backend openai`（任意 OpenAI 兼容端点）实测，
+数字才算数。
 
 ## 四、工具集
 
@@ -89,7 +137,16 @@ src/maldi_ms_agent/
 ```bash
 pip install -e .
 pip install -e ../maldi-ms-pipeline
-pytest -q                     # 23 项测试，含"无信号数据必须判证据不足"
+pytest -q                     # 42 项测试（含"无信号数据必须判证据不足"）
+pytest -q -m "not slow"       # 跳过需要跑完整合成流水线的部分，约 3 秒
+```
+
+跑一轮 ReAct（离线，不需要任何 API Key）：
+
+```bash
+python scripts/run_agent.py --synth --backend script --script ordered
+python scripts/run_agent.py --synth --backend script --script overclaim   # 虚报型对照
+python scripts/run_agent.py --synth --backend script --no-permutation     # C 组消融
 ```
 
 合成谱走的是完整链路（峰检测 → 对齐 → 过滤 → 建模），不是随手造的矩阵，
@@ -137,11 +194,11 @@ p 更大。引用数字时应说明用的是哪种方案。
 |---|---|---|
 | M1 | 工具化：`session.py` + `tools.py` 包装流水线 7 个阶段 | ✅ |
 | M2 | 新统计：`permutation_test` + `batch_effect_check` | ✅ 真实 37 例已复现口径与结论 |
-| M3 | Agent 层：ReAct 骨架 + 提示词 + 会话接入 | ⬜ |
+| M3 | Agent 层：ReAct 循环 + 提示词 + 双口径开关，42 项测试 | ✅ 离线链路已跑通 |
 | M4 | 合成与扰动：三类扰动任务集 | ⬜ |
 | M5 | 评测：4 组消融 × 任务集 × 多 seed + 显著性检验 | ⬜ |
 | M6 | 文档与开源 | ⬜ |
 
-## 七、许可
+## 八、许可
 
 MIT（代码）。真实队列数据与由此产生的特征矩阵不在许可范围内，也不随仓分发。
