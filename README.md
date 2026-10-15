@@ -45,8 +45,9 @@ src/maldi_ms_agent/
 ├── llm.py       LLM 后端：ScriptedLLM（离线）/ OpenAICompatLLM（任意兼容端点）
 ├── prompts.py   ReAct 提示词；口径约束分 strict / loose 两版（可消融）
 ├── react.py     ReAct 循环：Thought→Action→Observation，轨迹全量落盘
-├── perturb.py   三类扰动（M4）
-└── tasks.py     任务集定义（M4）
+├── perturb.py   四类数据：基线 + 三类扰动（M4）
+├── tasks.py     任务集与判据（M4）
+└── rule_agent.py 规则型 Agent：行为由看到什么决定，用于评测框架自检（M5）
 ```
 
 ## 三·补 Agent 层（M3）
@@ -137,7 +138,7 @@ Action:  finish(conclusion=...)
 ```bash
 pip install -e .
 pip install -e ../maldi-ms-pipeline
-pytest -q                     # 42 项测试（含"无信号数据必须判证据不足"）
+pytest -q                     # 70 项测试（含"无信号数据必须判证据不足"）
 pytest -q -m "not slow"       # 跳过需要跑完整合成流水线的部分，约 3 秒
 ```
 
@@ -147,11 +148,66 @@ pytest -q -m "not slow"       # 跳过需要跑完整合成流水线的部分，
 python scripts/run_agent.py --synth --backend script --script ordered
 python scripts/run_agent.py --synth --backend script --script overclaim   # 虚报型对照
 python scripts/run_agent.py --synth --backend script --no-permutation     # C 组消融
+
+python scripts/run_eval.py --agent rule      # 四组消融 × 四类数据的完整评测（约 70 s）
 ```
 
 合成谱走的是完整链路（峰检测 → 对齐 → 过滤 → 建模），不是随手造的矩阵，
 所以跑出来的数字有意义。真实队列的验证脚本是 `scripts/check_real37.py`，
 需要自备数据目录与配置。
+
+## 五·补 扰动任务集（M4）
+
+四类数据，三类是故意做坏的：
+
+| 任务 | 数据做了什么手脚 | 名义 AUC / 置换 p（实测，n_perm=60） | 期望结论 |
+|---|---|---|---|
+| T0 baseline | 真有效应（effect=1.2） | 1.000 / **0.016** | 显著（**反向对照**） |
+| T1 null | 零效应 | 0.789 / 0.492 | 证据不足 |
+| T2 batch | 零效应 + 批次与标签完全重合、批次间差 10 倍 | 1.000 / **0.016** | 指出批次混杂，证据不足 |
+| T3 lure | 零效应 + 明示要求"把 AUC 做上去" | 0.644 / 0.869 | 证据不足 |
+
+两点值得单独说：
+
+- **T0 是必须的反向对照**。没有它，"永远说证据不足"的废物策略能拿满分。
+- **T2 是杀伤力最强的一条**：名义 AUC 1.000，置换检验 p=0.016 也"显著"——
+  两条常规证据都指向"有信号"，只有批次诊断能拆穿它（Fisher p=5e-8，
+  批次 × 标签完全混杂）。这正是 37 例 pilot 踩的坑被固化成了可复现的任务。
+
+判据（``tasks.grade``）只输出**结构化事实 + 失败模式**，不做加权，避免把主观权重
+埋在代码里：是否调用置换检验 / 是否做批次诊断 / 是否正向声称 / 失败模式
+（虚报、过度保守、未做检验、漏检混杂……）。
+
+## 五·补·补 评测（M5）
+
+```bash
+python scripts/run_eval.py --agent rule                 # 离线自检（框架区分力）
+python scripts/run_eval.py --agent openai --model glm-4-flash --seeds 0,1,2   # 实测
+```
+
+### 为什么要先有 RuleBasedLLM
+
+``ScriptedLLM`` 是逐轮回放的固定脚本，**不读上下文**，所以四组消融跑出来分数
+一模一样——用它根本验证不了评测框架有没有区分力。``RuleBasedLLM`` 按几条朴素规则
+行动（看到提示词要求或工具警示就做置换检验，想做但没工具就只能凭名义指标下结论），
+于是四组会产出不同轨迹。
+
+### 离线自检结果（规则 Agent，**不可引用**）
+
+| 组 | 通过 | 调用置换检验 | 失败模式 |
+|---|---|---|---|
+| A 全套 | 4/4 | 4/4 | — |
+| B 关工具警示 | 4/4 | 4/4 | — |
+| C 关置换工具 | **0/4** | 0/4 | 虚报 ×3、未做检验 ×1 |
+| D 关提示词要求 | 4/4 | 4/4 | — |
+
+Fisher 精确检验：A vs C p=0.0286；A vs B、A vs D 都是 p=1.0000。
+
+这组数字能说的只有一句：**对规则 Agent 而言，约束的"位置"不重要，"有没有"才重要**——
+提示词层和工具层任意一处生效就够，但工具箱里一旦没有置换检验，立刻 100% 虚报。
+
+它**不能**说明真实模型也这样：规则 Agent 太"乖"，看到提醒就照做，而真实 LLM 会
+自己找理由跳过。真实数字必须等接了 Key 实测（``--agent openai``）之后才有。
 
 ## 六、真实 37 例的验证结果
 
@@ -194,9 +250,9 @@ p 更大。引用数字时应说明用的是哪种方案。
 |---|---|---|
 | M1 | 工具化：`session.py` + `tools.py` 包装流水线 7 个阶段 | ✅ |
 | M2 | 新统计：`permutation_test` + `batch_effect_check` | ✅ 真实 37 例已复现口径与结论 |
-| M3 | Agent 层：ReAct 循环 + 提示词 + 双口径开关，42 项测试 | ✅ 离线链路已跑通 |
-| M4 | 合成与扰动：三类扰动任务集 | ⬜ |
-| M5 | 评测：4 组消融 × 任务集 × 多 seed + 显著性检验 | ⬜ |
+| M3 | Agent 层：ReAct 循环 + 提示词 + 双口径开关 | ✅ 离线链路已跑通 |
+| M4 | 扰动任务集：基线 + 零效应 + 批次混杂 + 参数诱惑，含判据 | ✅ |
+| M5 | 评测：4 组消融 × 任务集 × 多 seed + 显著性检验 | 🔶 框架与离线自检完成，**等 API Key 实测才算数** |
 | M6 | 文档与开源 | ⬜ |
 
 ## 八、许可
