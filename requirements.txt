@@ -1,0 +1,14 @@
+# 运行时依赖
+# maldi-ms-pipeline 是本地依赖，用下面的方式安装（不要复制它的代码）：
+#   pip install -e ../maldi-ms-pipeline
+# 或设置环境变量指向它的 src 目录：
+#   MALDI_PIPELINE_SRC=/path/to/maldi-ms-pipeline/src
+
+numpy
+scipy
+scikit-learn
+pandas
+pyyaml
+
+# Agent 层（M3 起需要）；离线评测可用 EchoGenerator，不装也能跑
+# openai>=1.0
