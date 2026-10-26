@@ -75,6 +75,53 @@ def make_llm(agent: str, n_perm: int, model: str, base_url: str):
     return create_llm("openai", **({"model": model, "base_url": base_url} if model else {}))
 
 
+def _dump(out: Path, args, seeds, groups, results, comparisons) -> None:
+    """把当前进度写进 JSON（每组跑完或全部跑完都会调用一次）。"""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    summary = {}
+    for gname in groups:
+        gs = [tr.grade for tr in results.get(gname, [])]
+        n = len(gs)
+        ok = sum(g.correct for g in gs)
+        modes = Counter(g.failure_mode for g in gs if g.failure_mode)
+        summary[gname] = {
+            "n": n,
+            "correct": ok,
+            "rate": ok / n if n else 0.0,
+            "failure_modes": dict(modes),
+            "called_permutation": sum(g.called_permutation for g in gs),
+            "used_batch_check": sum(g.used_batch_check for g in gs),
+        }
+    out.write_text(
+        json.dumps(
+            {
+                "agent": args.agent,
+                "model": args.model,
+                "n_perm": args.n_perm,
+                "seeds": seeds,
+                "offline": args.agent != "openai",
+                "partial": len(results) < len(groups),
+                "warning": (
+                    "离线后端（rule/script）跑出的数字只用于验证评测框架的区分力，"
+                    "不代表真实模型水平，不得引用。"
+                    if args.agent != "openai"
+                    else ""
+                ),
+                "summary": summary,
+                "comparisons": comparisons,
+                "runs": [
+                    {**tr.to_dict(), "group": gname}
+                    for gname in groups
+                    for tr in results.get(gname, [])
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--agent", default="rule", choices=["rule", "script", "openai"])
@@ -117,6 +164,11 @@ def main() -> int:
                 verbose=args.verbose,
             )
             results[gname].append(tr)
+
+            # 每组跑完立刻落盘一次：长批次（几十条）中途被打断也不会全丢
+            if args.out:
+                _dump(Path(args.out), args, seeds, groups, results, comparisons={})
+
             print(
                 f"[{gname:14s}] {t.id:16s} correct={str(tr.grade.correct):5s} "
                 f"perm={str(tr.grade.called_permutation):5s} "
@@ -176,30 +228,7 @@ def main() -> int:
             pass
 
     out = Path(args.out) if args.out else ROOT / "reports" / f"eval_{args.agent}_{int(time.time())}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        json.dumps(
-            {
-                "agent": args.agent,
-                "model": args.model,
-                "n_perm": args.n_perm,
-                "seeds": seeds,
-                "offline": args.agent != "openai",
-                "warning": (
-                    "离线后端（rule/script）跑出的数字只用于验证评测框架的区分力，"
-                    "不代表真实模型水平，不得引用。"
-                    if args.agent != "openai"
-                    else ""
-                ),
-                "summary": summary,
-                "comparisons": comparisons,
-                "runs": [tr.to_dict() for g in groups for tr in results[g]],
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    _dump(out, args, seeds, groups, results, comparisons)
     print(f"\n总耗时 {time.time()-t0:.0f}s；结果已写入 {out}")
     return 0
 
