@@ -1,7 +1,7 @@
 # maldi-ms-agent
 
 [![CI](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-116%20passing-brightgreen)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-122%20passing-brightgreen)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
 [![license](https://img.shields.io/github/license/Wang-13137/maldi-ms-agent)](LICENSE)
 [![version](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/Wang-13137/maldi-ms-agent/releases)
@@ -149,7 +149,7 @@ Action:  finish(conclusion=...)
 ```bash
 pip install -e .
 pip install -e ../maldi-ms-pipeline
-pytest -q                     # 116 项测试（含"无信号数据必须判证据不足"）
+pytest -q                     # 122 项测试（含"无信号数据必须判证据不足"）
 pytest -q -m "not slow"       # 跳过需要跑完整合成流水线的部分，约 3 秒
 ```
 
@@ -328,10 +328,10 @@ p 更大。引用数字时应说明用的是哪种方案。
 | M3 | Agent 层：ReAct 循环 + 提示词 + 双口径开关 | ✅ 离线链路已跑通 |
 | M4 | 扰动任务集：基线 + 零效应 + 批次混杂 + 参数诱惑，含判据 | ✅ |
 | M5 | 评测：4 组消融 × 任务集 + 显著性检验 | ✅ glm-4-flash 实测 **64 条**（4 组 × 4 任务 × 4 seed）；A vs C 显著（McNemar p=0.0010）。**多模型未做** |
-| M6 | 文档与开源 | ✅ 已开源（GitHub Actions CI 跑通 116 项测试，3.10/3.11/3.12 矩阵） |
+| M6 | 文档与开源 | ✅ 已开源（GitHub Actions CI 3.10/3.11/3.12 矩阵，当前 122 项测试全过） |
 | M7 | 企业级工程化：OTel GenAI 可观测 + 默认脱敏 + 离线行为门禁进 CI | ✅ 见第八节；`v0.3.0` |
 | M8 | MCP 工具服务（会话隔离 / 最小权限 / 出进程脱敏）+ token·时间·调用数硬熔断 | ✅ 见第九节；`v0.4.0` |
-| M9 | 断点续跑：每次 run 附带可序列化检查点，预算熔断后可从断点恢复、不重放已完成步骤 | ✅ 见 9.5 节；`v0.5.0` |
+| M9 | 断点续跑：每次 run 附带可序列化检查点，预算熔断后可从断点恢复、不重放已完成步骤 | ✅ 见第十节；`v0.5.0` |
 
 ## 八、企业级 Agent 工程化（M7）
 
@@ -418,7 +418,7 @@ python scripts/eval_gate.py     # 10/10 才返回 0，产物 reports/eval_gate.j
 M8（`v0.4.0`）已补上 MCP 工具服务与 token / 时间硬熔断，见第九节；
 下面这些**到 M8 之后仍未做**，不写进简历、不写进面试说辞：
 
-- 没有服务化 HTTP API、SSE 流式输出、水平扩展或**跨进程**状态持久化（MCP 是 stdio 单进程；单 run 内的断点续跑见 9.5，但还没做成"落盘后由另一个进程恢复"的服务）；
+- 没有服务化 HTTP API、SSE 流式输出、水平扩展或**跨进程**状态持久化（MCP 是 stdio 单进程；单 run 内的断点续跑见第十节，但还没做成"落盘后由另一个进程恢复"的服务）；
 - 没有 LLM-as-judge 在线评测、生产流量采样与漂移告警；
 - 没有 human-in-the-loop 审批闸门（本项目工具只读，不涉及不可逆写操作）；
 - 没有多模型回归（仍是单模型，见 M5 的统计交代）；
@@ -483,7 +483,7 @@ CI 路径上恒为 0，token 预算因此永远不会触发。修法是给它补
 > 而是会话隔离、工具白名单和出进程前的脱敏；运行时再加 token / 时间 / 调用数三类硬预算，
 > 超了就确定地停、不给模型最后一次虚报机会。所有新字段都走 span 旁路，评测 JSON 一格没动。」
 
-### 9.5 断点续跑（M9，v0.5.0）
+## 十、断点续跑（M9，v0.5.0）
 
 M8 让循环能"确定地停"。但生产里一次分析可能跑很多步、耗时较长，中途因为预算 / 墙钟
 被打断后，应当能从断点**续跑**而不是从头再来。M9 把"停"补成了闭环：
@@ -520,6 +520,6 @@ assert resumed.finished and resumed.n_steps > run.n_steps   # 接着跑完，不
 > 检查点，预算耗尽停下后能用更大预算从断点接着跑、不重放已完成步骤，所以硬停不是丢活，
 > 而是可恢复的暂停。」
 
-## 十、许可
+## 十一、许可
 
 MIT（见 ``LICENSE``）。真实队列数据与由此产生的特征矩阵不在许可范围内，也不随仓分发。
