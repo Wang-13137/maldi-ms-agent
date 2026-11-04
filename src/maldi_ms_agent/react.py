@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from .llm import LLM, Message, ScriptedLLM
 from .prompts import build_system_prompt, build_user_prompt
 from .session import AnalysisSession
+from .telemetry import TraceRecorder, TraceSummary
 from .tools import Tool, ToolResult, build_tools
 
 # ---------------------------------------------------------------- 解析
@@ -202,6 +203,10 @@ class RunResult:
     honest: bool = True
     with_permutation: bool = True
     error: str = ""
+    #: 结构化可观测数据。刻意**不放进 to_dict()**：M5 的四组消融要逐格比对
+    #: 轨迹，评测 JSON 的格式必须保持稳定，新增字段只能走旁路。
+    trace: Optional[TraceSummary] = None
+    recorder: Optional[TraceRecorder] = None
 
     # ---------------------------------------------------------- 评测用快捷查询
 
@@ -267,12 +272,14 @@ def run_react(
     strict: bool = True,
     max_parse_retries: int = 2,
     verbose: bool = False,
+    recorder: Optional[TraceRecorder] = None,
 ) -> RunResult:
     """跑一轮 ReAct。
 
     - ``honest`` / ``with_permutation`` 控制**工具层**口径（见 tools.build_tools）；
     - ``strict`` 控制**提示词层**口径（见 prompts.build_system_prompt）。
       两者独立，正是消融设计想要的。
+    - ``recorder`` 可注入自定义 TraceRecorder；不传则默认创建一个（默认脱敏）。
     """
     tools = build_tools(session, honest=honest, with_permutation=with_permutation)
     by_name = {t.name: t for t in tools}
@@ -288,12 +295,38 @@ def run_react(
         honest=honest, with_permutation=with_permutation,
     )
 
+    # 结构化可观测：instrumented from day one，但默认只记元数据、不记内容。
+    rec = recorder if recorder is not None else TraceRecorder()
+    run.recorder = rec
+    root = rec.begin_root(
+        **{
+            "gen_ai.operation.name": "invoke_agent",
+            "gen_ai.agent.name": "maldi-ms-agent",
+            "gen_ai.request.model": llm.name,
+            "gen_ai.conversation.id": rec.run_id,
+            "app.ablation.strict": strict,
+            "app.ablation.honest": honest,
+            "app.ablation.with_permutation": with_permutation,
+            "app.budget.max_steps": max_steps,
+        }
+    )
+
     parse_fail_streak = 0
     last_sig = ""
     repeat_streak = 0
     for i in range(max_steps):
         try:
-            raw = llm.complete(messages)
+            with rec.child("chat " + llm.name, "LLM", **{
+                "gen_ai.operation.name": "chat",
+                "gen_ai.request.model": llm.name,
+            }) as llm_span:
+                raw = llm.complete(messages)
+            usage = llm.last_usage
+            llm_span.attributes.update({
+                "gen_ai.usage.input_tokens": usage.input_tokens,
+                "gen_ai.usage.output_tokens": usage.output_tokens,
+                "gen_ai.response.finish_reasons": [llm.last_finish_reason],
+            })
         except Exception as exc:  # noqa: BLE001
             run.stopped_reason = "error"
             run.error = f"LLM 调用失败：{exc}"
@@ -303,6 +336,7 @@ def run_react(
             thought, name, kwargs = parse_action(raw)
         except ParseError as exc:
             parse_fail_streak += 1
+            llm_span.attributes["gen_ai.response.finish_reasons"] = ["parse_error"]
             run.steps.append(
                 Step(i, "", "<parse_error>", {}, str(exc), False, raw=raw)
             )
@@ -323,19 +357,34 @@ def run_react(
                 f"[错误] 没有名为 `{name}` 的工具。可用工具："
                 + ", ".join(by_name.keys())
             )
+            with rec.child(f"execute_tool {name}", "TOOL", **{
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": name,
+                "gen_ai.tool.call.id": f"{rec.run_id}-{i}",
+            }) as unknown_span:
+                unknown_span.set_status("ERROR", "unknown tool")
             run.steps.append(Step(i, thought, name, dict(kwargs), obs, False, raw=raw))
             messages.append({"role": "assistant", "content": raw})
             messages.append({"role": "user", "content": f"Observation: {obs}"})
             continue
 
-        try:
-            res, resolved = call_tool(tool, kwargs)
-        except ParseError as exc:
-            res, resolved = ToolResult(f"[错误] {exc}", {"error": str(exc)}), dict(kwargs)
-        except Exception as exc:  # noqa: BLE001
-            run.stopped_reason = "error"
-            run.error = f"工具 {name} 抛异常：{exc}"
-            break
+        with rec.child(f"execute_tool {name}", "TOOL", **{
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": name,
+            "gen_ai.tool.call.id": f"{rec.run_id}-{i}",
+        }) as tool_span:
+            try:
+                res, resolved = call_tool(tool, kwargs)
+            except ParseError as exc:
+                res, resolved = ToolResult(f"[错误] {exc}", {"error": str(exc)}), dict(kwargs)
+            except Exception as exc:  # noqa: BLE001
+                run.stopped_reason = "error"
+                run.error = f"工具 {name} 抛异常：{exc}"
+                tool_span.set_status("ERROR", str(exc))
+                break
+            tool_span.attributes["gen_ai.tool.call.status"] = "ok" if res.ok else "error"
+            if not res.ok:
+                tool_span.set_status("ERROR", "tool returned error payload")
 
         run.steps.append(
             Step(i, thought, name, resolved, res.text, res.ok, res.payload, raw=raw)
@@ -372,6 +421,13 @@ def run_react(
         run.stopped_reason = "max_steps"
         run.error = f"达到步数上限 {max_steps}，未给出结论"
 
+    root.attributes.update({
+        "app.run.stopped_reason": run.stopped_reason,
+        "app.run.n_steps": run.n_steps,
+        "app.run.finished": run.finished,
+    })
+    rec.finish_root("ERROR" if run.stopped_reason == "error" else "OK")
+    run.trace = rec.summary(n_steps=run.n_steps, stopped_reason=run.stopped_reason)
     return run
 
 

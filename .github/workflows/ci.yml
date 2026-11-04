@@ -40,3 +40,8 @@ jobs:
 
       - name: Run tests
         run: pytest -q
+
+      - name: Behavior eval gate (offline, no API key)
+        # 行为门禁与 Python 版本无关；单测矩阵已覆盖版本差异，这里只跑一次
+        if: matrix.python-version == '3.12'
+        run: python scripts/eval_gate.py --out reports/eval_gate.json

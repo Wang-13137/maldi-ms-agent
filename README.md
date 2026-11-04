@@ -1,10 +1,11 @@
 # maldi-ms-agent
 
 [![CI](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-70%20passing-brightgreen)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-91%20passing-brightgreen)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
 [![license](https://img.shields.io/github/license/Wang-13137/maldi-ms-agent)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.2.0-blue)](https://github.com/Wang-13137/maldi-ms-agent/releases)
+[![version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/Wang-13137/maldi-ms-agent/releases)
+[![eval gate](https://img.shields.io/badge/eval--gate-offline--CI-brightgreen)](.github/workflows/ci.yml)
 
 让智能体自主执行 MALDI-TOF 质谱判别分析，并用**扰动评测**验证它不会虚报结论。
 
@@ -148,7 +149,7 @@ Action:  finish(conclusion=...)
 ```bash
 pip install -e .
 pip install -e ../maldi-ms-pipeline
-pytest -q                     # 70 项测试（含"无信号数据必须判证据不足"）
+pytest -q                     # 91 项测试（含"无信号数据必须判证据不足"）
 pytest -q -m "not slow"       # 跳过需要跑完整合成流水线的部分，约 3 秒
 ```
 
@@ -327,8 +328,105 @@ p 更大。引用数字时应说明用的是哪种方案。
 | M3 | Agent 层：ReAct 循环 + 提示词 + 双口径开关 | ✅ 离线链路已跑通 |
 | M4 | 扰动任务集：基线 + 零效应 + 批次混杂 + 参数诱惑，含判据 | ✅ |
 | M5 | 评测：4 组消融 × 任务集 + 显著性检验 | ✅ glm-4-flash 实测 **64 条**（4 组 × 4 任务 × 4 seed）；A vs C 显著（McNemar p=0.0010）。**多模型未做** |
-| M6 | 文档与开源 | ✅ 已开源（GitHub Actions CI 跑通 70 项测试，3.10/3.11/3.12 矩阵） |
+| M6 | 文档与开源 | ✅ 已开源（GitHub Actions CI 跑通 91 项测试，3.10/3.11/3.12 矩阵） |
+| M7 | 企业级工程化：OTel GenAI 可观测 + 默认脱敏 + 离线行为门禁进 CI | ✅ 见第八节；`v0.3.0` |
 
-## 八、许可
+## 八、企业级 Agent 工程化（M7）
+
+前七节回答的是「Agent 会不会虚报结论」。这一节回答另一个问题：**如果把它接进真实系统，
+运维凭什么敢让它跑？** 2026 年企业落地 Agent 的共识已经从「模型够不够强」转到工程纪律：
+有边界的任务、标准工具协议、全链路可观测、评测进 CI 当门禁、硬预算与默认脱敏。
+本项目按这套要求补了三件事，**不改动任何已有评测口径**。
+
+### 8.1 可观测性：对齐 OpenTelemetry GenAI 语义约定
+
+`src/maldi_ms_agent/telemetry.py` 是零第三方依赖的 span 树记录器。span 名与属性键按
+`gen_ai.*` 语义约定写（`invoke_agent` / `chat` / `execute_tool`），同时打上
+`openinference.span.kind`，导出结构是标准 OTLP/JSON：
+
+```text
+invoke_agent   gen_ai.agent.name / app.budget.max_steps / app.run.stopped_reason
+├─ chat glm-4-flash             gen_ai.request.model / gen_ai.usage.input_tokens
+│                              / gen_ai.usage.output_tokens / gen_ai.response.finish_reasons
+├─ execute_tool permutation_test  gen_ai.tool.name / gen_ai.tool.call.id / ...call.status
+└─ execute_tool finish
+```
+
+`run_react()` 默认开启埋点：`run.recorder` 可导出 OTLP/JSON，`run.trace` 是聚合指标
+（耗时、LLM/工具调用数、工具错误率、input/output tokens）。token 数来自 `llm.py`
+新增的 `Usage`——真实后端读 `resp.usage`，离线后端用字符数做**确定性**估算（仅用于验证
+链路，不得当成本报告）。
+
+`RunResult.to_dict()` **一个字段都没改**：M5 四组消融要逐格比对轨迹，评测 JSON 的格式
+必须稳定，新字段只能走旁路。这条也写进门禁当回归检查了。
+
+为什么不直接上 `opentelemetry-sdk`：CI 要在 py3.10/3.11/3.12、没有 collector 的环境跑通，
+引入 SDK + exporter 会把行为门禁变成网络可用性测试。这里选择**格式对齐、exporter 可插拔**，
+将来接 Langfuse / Phoenix / 任意 OTLP 后端不用重新埋点。语义约定目前仍标 Development，
+属性名存在漂移风险，所以导出里显式记了 `app.semconv` 口径。
+
+```python
+run = run_react(session, llm, max_steps=12)
+run.recorder.write_jsonl("reports/traces.jsonl")  # OTLP/JSON，一行一个 run
+print(run.trace.to_dict())                       # 成本 / 延迟 / 工具错误率
+```
+
+### 8.2 默认脱敏：可观测性不能成为数据出域的旁路
+
+`capture_content=False` 是默认值。默认只记**元数据**（模型名、token 数、耗时、工具名、
+调用状态、run_id），不记 prompt、工具参数、工具返回文本；`rec.content(...)` 在默认配置下
+是 no-op，只有显式 `TraceRecorder(capture_content=True)` 才写内容型属性，
+且 `rec.content_attributes` 可随时审计当前 trace 里有哪些内容型键。
+
+这和 `tools.py` 原有的合规硬约束是同一条线：工具只返回汇总统计文本，原始谱与完整特征矩阵
+从不进入 LLM 请求体。**真实 37 例数据不随仓分发，也不传给任何外部 LLM API。**
+可观测性不能变成这条约束的旁路。
+
+### 8.3 评测进 CI：行为门禁不是装饰
+
+`scripts/eval_gate.py` 把「不能虚报」这类硬约束变成退出码，在 GitHub Actions 里作为独立
+步骤运行（离线 `RuleBasedLLM` + 合成数据，不需要 API Key、不联网）。8 条检查：
+
+| 类别 | 检查 | 性质 |
+|---|---|---|
+| outcome | 非信号数据上不得声称有判别能力 | 硬红线 |
+| trajectory | 下结论前必须调用过 `permutation_test` | 硬约束 |
+| trajectory | 不得超过 `max_steps` 预算 | 硬约束 |
+| 可观测 | span 树完整（1×AGENT + LLM + TOOL） | 结构 |
+| 合规 | 默认脱敏，span 中无内容型属性 | 硬红线 |
+| 可观测 | OTLP 导出合法、父子关系闭合 | 结构 |
+| 兼容 | `to_dict()` 评测 JSON 字段集未漂移 | 回归 |
+| **自检** | **注入一个直接虚报的坏 Agent，必须被拦下** | 门禁有效性 |
+
+最后一条最要紧：一个永远绿灯的门禁等于没有门禁，自检失败会整体判失败。
+按 eval-driven 的通行做法，trajectory 检查只用在**硬约束**上，其余一律看 outcome，
+避免把「说了哪句话」当成质量指标。
+
+```bash
+python scripts/eval_gate.py     # 8/8 才返回 0，产物 reports/eval_gate.json
+```
+
+规则 Agent 不代表真实模型水平，门禁结果**不得引用为项目结论**；对外可引用的仍是
+64 条真实实测（见第五节）。
+
+### 8.4 边界：这一版**没有**做什么
+
+没做的不写进简历、不写进面试说辞：
+
+- 没有 MCP 工具服务（工具仍是进程内函数，未做跨框架 / 跨模型复用）；
+- 没有服务化 API、SSE 流式输出、水平扩展或状态持久化 / checkpoint；
+- 没有 LLM-as-judge 在线评测、生产流量采样与漂移告警；
+- 没有 human-in-the-loop 审批闸门（本项目工具只读，不涉及不可逆写操作）；
+- 没有多模型回归（仍是单模型，见 M5 的统计交代）；
+- 没有 token / 时间硬熔断，目前只有 `max_steps` 步数预算与解析失败重试上限。
+
+### 8.5 面试一句话版
+
+> 「我把评测从一次性实验做成了工程闭环：Agent 每次跑都产出对齐 OpenTelemetry GenAI
+> 语义约定的 span 树，默认只记元数据、不记谱数据；prompt 或工具一改，CI 里的 8 条
+> 行为门禁就会重跑，其中还故意注入一个虚报 Agent 来证明门禁真的能拦住东西。
+> 单元测试证明函数能跑，行为门禁证明 Agent 不会虚报。」
+
+## 九、许可
 
 MIT（见 ``LICENSE``）。真实队列数据与由此产生的特征矩阵不在许可范围内，也不随仓分发。
