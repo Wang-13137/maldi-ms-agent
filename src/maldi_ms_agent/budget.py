@@ -112,5 +112,27 @@ class BudgetState:
             "exceeded_reason": self.exceeded_reason,
         }
 
+    @classmethod
+    def from_snapshot(
+        cls,
+        budget: "Budget",
+        snap: Dict[str, Any],
+        clock: Optional[Callable[[], float]] = None,
+    ) -> "BudgetState":
+        """从检查点快照恢复账本（M9 续跑用）。
+
+        只恢复**计数类**用量（token / 工具调用 / 步数），墙钟时间重置为当前时刻——
+        续跑视为一次新的墙钟窗口，这是合理且可解释的。token 只记总和，这里把
+        ``used_total_tokens`` 整体记到 ``input_tokens``（``total = input + output``
+        不变，预算判定等价）。``exceeded_reason`` 清零，让续跑重新走完整判定。
+        """
+        bs = cls(budget, clock=clock if clock is not None else time.monotonic)
+        bs.input_tokens = int(snap.get("used_total_tokens", 0))
+        bs.output_tokens = 0
+        bs.tool_calls = int(snap.get("used_tool_calls", 0))
+        bs.steps = int(snap.get("used_steps", 0))
+        bs.exceeded_reason = ""
+        return bs
+
 
 __all__ = ["Budget", "BudgetState"]

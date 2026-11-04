@@ -4,7 +4,7 @@
 [![tests](https://img.shields.io/badge/tests-116%20passing-brightgreen)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
 [![license](https://img.shields.io/github/license/Wang-13137/maldi-ms-agent)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/Wang-13137/maldi-ms-agent/releases)
+[![version](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/Wang-13137/maldi-ms-agent/releases)
 [![eval gate](https://img.shields.io/badge/eval--gate-offline--CI-brightgreen)](.github/workflows/ci.yml)
 
 让智能体自主执行 MALDI-TOF 质谱判别分析，并用**扰动评测**验证它不会虚报结论。
@@ -331,6 +331,7 @@ p 更大。引用数字时应说明用的是哪种方案。
 | M6 | 文档与开源 | ✅ 已开源（GitHub Actions CI 跑通 116 项测试，3.10/3.11/3.12 矩阵） |
 | M7 | 企业级工程化：OTel GenAI 可观测 + 默认脱敏 + 离线行为门禁进 CI | ✅ 见第八节；`v0.3.0` |
 | M8 | MCP 工具服务（会话隔离 / 最小权限 / 出进程脱敏）+ token·时间·调用数硬熔断 | ✅ 见第九节；`v0.4.0` |
+| M9 | 断点续跑：每次 run 附带可序列化检查点，预算熔断后可从断点恢复、不重放已完成步骤 | ✅ 见 9.5 节；`v0.5.0` |
 
 ## 八、企业级 Agent 工程化（M7）
 
@@ -417,7 +418,7 @@ python scripts/eval_gate.py     # 10/10 才返回 0，产物 reports/eval_gate.j
 M8（`v0.4.0`）已补上 MCP 工具服务与 token / 时间硬熔断，见第九节；
 下面这些**到 M8 之后仍未做**，不写进简历、不写进面试说辞：
 
-- 没有服务化 HTTP API、SSE 流式输出、水平扩展或状态持久化 / checkpoint（MCP 是 stdio 单进程）；
+- 没有服务化 HTTP API、SSE 流式输出、水平扩展或**跨进程**状态持久化（MCP 是 stdio 单进程；单 run 内的断点续跑见 9.5，但还没做成"落盘后由另一个进程恢复"的服务）；
 - 没有 LLM-as-judge 在线评测、生产流量采样与漂移告警；
 - 没有 human-in-the-loop 审批闸门（本项目工具只读，不涉及不可逆写操作）；
 - 没有多模型回归（仍是单模型，见 M5 的统计交代）；
@@ -481,6 +482,43 @@ CI 路径上恒为 0，token 预算因此永远不会触发。修法是给它补
 > 「工具层我按 MCP 暴露成标准协议，但质谱流水线是有状态的，所以重点不是帧格式，
 > 而是会话隔离、工具白名单和出进程前的脱敏；运行时再加 token / 时间 / 调用数三类硬预算，
 > 超了就确定地停、不给模型最后一次虚报机会。所有新字段都走 span 旁路，评测 JSON 一格没动。」
+
+### 9.5 断点续跑（M9，v0.5.0）
+
+M8 让循环能"确定地停"。但生产里一次分析可能跑很多步、耗时较长，中途因为预算 / 墙钟
+被打断后，应当能从断点**续跑**而不是从头再来。M9 把"停"补成了闭环：
+
+`src/maldi_ms_agent/checkpoint.py` 的 `Checkpoint` 把一次 run 的可恢复状态
+（对话历史 `messages`、已完成步骤 `steps`、累计工具调用、预算账本快照、卡壳检测状态）
+序列化成 JSON——纯数据、无对象引用，可直接 `save()` / `load()`：
+
+- `run_react(checkpoint=None)` 如常从零开始；`run_react(checkpoint=ckpt)` 反序列化后
+  从下一个步号接着跑，**不重放**已完成步骤（前 N 步是直接恢复的 `Step`，不是重新调工具）；
+- 预算账本一并恢复：续跑时累计 token / 工具调用 / 步数，墙钟时间重置为新的窗口；
+- 已 `finish` 的检查点续跑是幂等 no-op，不发起任何 LLM / 工具调用；
+- 每次 run 都附带 `run.checkpoint`，落盘即可做"中断—续跑"。
+
+两个刻意的设计（与 M8 一致）：
+
+- **墙钟时间不跨断点累计**。续跑视为一次新的墙钟窗口——预算语义保持"单次执行内"的边界，
+  不把两次执行的时间偷偷缝成一条；token / 步数这类**计数型**用量则跨断点累计，因为
+  它们衡量的是"这件事总共花了多少"，理应接着算。
+- **`to_dict()` 评测 JSON 字段集依旧一格没动**。检查点只挂在 `RunResult.checkpoint`，
+  走旁路；M5 四组消融的逐格比对格式不漂移，CI 门禁里仍校验。
+
+```python
+run = run_react(session, llm, budget=Budget(max_steps=2))   # 预算耗尽，budget_exceeded
+assert run.stopped_reason == "budget_exceeded"
+run.checkpoint.save("ckpt.json")                            # 断点落盘
+
+resumed = run_react(session, llm, budget=Budget(max_steps=64),
+                    checkpoint=Checkpoint.load("ckpt.json")) # 更大预算续跑
+assert resumed.finished and resumed.n_steps > run.n_steps   # 接着跑完，不重放
+```
+
+> 面试一句话版补一句：「M8 熔断之后，M9 又补了断点续跑——每次 run 都带一份可序列化的
+> 检查点，预算耗尽停下后能用更大预算从断点接着跑、不重放已完成步骤，所以硬停不是丢活，
+> 而是可恢复的暂停。」
 
 ## 十、许可
 

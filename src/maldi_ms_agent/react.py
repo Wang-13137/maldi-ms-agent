@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .budget import Budget, BudgetState
+from .checkpoint import Checkpoint
 from .llm import LLM, Message, ScriptedLLM
 from .prompts import build_system_prompt, build_user_prompt
 from .session import AnalysisSession
@@ -191,6 +192,33 @@ class Step:
     #: 这样轨迹里的 observation 始终是工具的原始输出。
     hint: str = ""
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "index": self.index,
+            "thought": self.thought,
+            "action": self.action,
+            "args": self.args,
+            "observation": self.observation,
+            "ok": self.ok,
+            "payload": self.payload,
+            "raw": self.raw,
+            "hint": self.hint,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "Step":
+        return cls(
+            index=int(d["index"]),
+            thought=d.get("thought", ""),
+            action=d["action"],
+            args=d.get("args", {}) or {},
+            observation=d.get("observation", ""),
+            ok=bool(d.get("ok", False)),
+            payload=d.get("payload", {}) or {},
+            raw=d.get("raw", ""),
+            hint=d.get("hint", ""),
+        )
+
 
 @dataclass
 class RunResult:
@@ -210,6 +238,11 @@ class RunResult:
     recorder: Optional[TraceRecorder] = None
     #: M8 运行时预算账本。同样刻意不进 to_dict()，评测 JSON 字段集保持冻结。
     budget_state: Optional[BudgetState] = None
+    #: M9 续跑用：本次 run 的来源目录与步数上限（仅用于重建检查点，不进 to_dict）。
+    data_dir: str = ""
+    max_steps: int = 0
+    #: M9 续跑检查点。刻意不进 to_dict()，评测 JSON 字段集保持冻结。
+    checkpoint: Optional["Checkpoint"] = None
 
     # ---------------------------------------------------------- 评测用快捷查询
 
@@ -278,6 +311,7 @@ def run_react(
     recorder: Optional[TraceRecorder] = None,
     budget: Optional[Budget] = None,
     clock: Optional[Callable[[], float]] = None,
+    checkpoint: Optional["Checkpoint"] = None,
 ) -> RunResult:
     """跑一轮 ReAct。
 
@@ -287,26 +321,57 @@ def run_react(
     - ``recorder`` 可注入自定义 TraceRecorder；不传则默认创建一个（默认脱敏）。
     - ``budget`` 为 M8 的硬预算（token / 墙钟时间 / 工具调用数 / 步数）。
       传 ``None`` 时行为与 M5/M7 完全一致；``clock`` 只用于确定性测试。
+    - ``checkpoint`` 为 M9 的续跑检查点：传 ``None`` 时从零开始；传 ``Checkpoint``
+      时从断点恢复（对话历史 / 已完成步骤 / 累计用量），**不重放**已完成步骤。
+      已 ``finish`` 的检查点会幂等返回，不发起任何 LLM / 工具调用。
     """
     tools = build_tools(session, honest=honest, with_permutation=with_permutation)
     by_name = {t.name: t for t in tools}
 
     system = build_system_prompt(tools, strict=strict)
-    messages: List[Message] = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": build_user_prompt(task, data_dir)},
-    ]
 
     run = RunResult(
         task=task, backend=llm.name, strict=strict,
         honest=honest, with_permutation=with_permutation,
+        data_dir=data_dir, max_steps=max_steps,
     )
+
+    # M9 续跑：从检查点恢复可恢复状态，不重放已完成步骤。
+    start_index = 0
+    last_sig = ""
+    repeat_streak = 0
+    if checkpoint is not None:
+        run.data_dir = checkpoint.data_dir
+        run.strict = checkpoint.strict
+        run.honest = checkpoint.honest
+        run.with_permutation = checkpoint.with_permutation
+        run.backend = checkpoint.backend
+        run.steps = [Step.from_dict(s) for s in checkpoint.steps]
+        run.tool_calls = list(checkpoint.tool_calls)
+        run.conclusion = checkpoint.conclusion
+        run.stopped_reason = checkpoint.stopped_reason
+        last_sig = checkpoint.last_sig
+        repeat_streak = checkpoint.repeat_streak
+        start_index = len(run.steps)
+        messages = [dict(m) for m in checkpoint.messages]
+        # 已 finish 的检查点：幂等返回，不发起任何 LLM / 工具调用。
+        if checkpoint.finished:
+            run.checkpoint = checkpoint
+            return run
+    else:
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": build_user_prompt(task, data_dir)},
+        ]
 
     # M8 硬预算：默认关闭，开启后账本随 span 一起导出。
     if budget is None:
         bstate = None
     else:
-        bstate = BudgetState(budget, clock=clock) if clock is not None else BudgetState(budget)
+        if checkpoint is not None and checkpoint.budget_snapshot is not None:
+            bstate = BudgetState.from_snapshot(budget, checkpoint.budget_snapshot, clock)
+        else:
+            bstate = BudgetState(budget, clock=clock) if clock is not None else BudgetState(budget)
     run.budget_state = bstate
 
     # 结构化可观测：instrumented from day one，但默认只记元数据、不记内容。
@@ -330,9 +395,7 @@ def run_react(
             root.attributes[f"app.budget.limit.{k}"] = v
 
     parse_fail_streak = 0
-    last_sig = ""
-    repeat_streak = 0
-    for i in range(max_steps):
+    for i in range(start_index, max_steps):
         # 每轮开始先查预算（墙钟/步数），避免在已经超支后还发起一次 LLM 调用。
         if bstate is not None:
             bstate.tick_step()
@@ -476,6 +539,8 @@ def run_react(
             root.attributes[f"app.budget.{k}"] = v
     rec.finish_root("ERROR" if run.stopped_reason == "error" else "OK")
     run.trace = rec.summary(n_steps=run.n_steps, stopped_reason=run.stopped_reason)
+    # M9：每次 run 都附带可续跑的检查点（刻意不进 to_dict()，评测 JSON 字段集冻结）。
+    run.checkpoint = Checkpoint.from_run(run, messages, last_sig, repeat_streak)
     return run
 
 
@@ -487,4 +552,5 @@ __all__ = [
     "parse_kwargs",
     "call_tool",
     "run_react",
+    "Checkpoint",
 ]
