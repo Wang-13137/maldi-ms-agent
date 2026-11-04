@@ -1,5 +1,11 @@
 # maldi-ms-agent
 
+[![CI](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-70%20passing-brightgreen)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
+[![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
+[![license](https://img.shields.io/github/license/Wang-13137/maldi-ms-agent)](LICENSE)
+[![version](https://img.shields.io/badge/version-0.2.0-blue)](https://github.com/Wang-13137/maldi-ms-agent/releases)
+
 让智能体自主执行 MALDI-TOF 质谱判别分析，并用**扰动评测**验证它不会虚报结论。
 
 > **面试版一句话**：我让 Agent 跑我的质谱流水线，然后故意给它标签打乱的数据——
@@ -321,7 +327,7 @@ p 更大。引用数字时应说明用的是哪种方案。
 | M3 | Agent 层：ReAct 循环 + 提示词 + 双口径开关 | ✅ 离线链路已跑通 |
 | M4 | 扰动任务集：基线 + 零效应 + 批次混杂 + 参数诱惑，含判据 | ✅ |
 | M5 | 评测：4 组消融 × 任务集 + 显著性检验 | ✅ glm-4-flash 实测 **64 条**（4 组 × 4 任务 × 4 seed）；A vs C 显著（McNemar p=0.0010）。**多模型未做** |
-| M6 | 文档与开源 | ⬜ |
+| M6 | 文档与开源 | ✅ 已开源（GitHub Actions CI 跑通 70 项测试，3.10/3.11/3.12 矩阵） |
 
 ## 八、许可
 
