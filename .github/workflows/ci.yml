@@ -9,6 +9,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      MALDI_PIPELINE_SRC: ${{ github.workspace }}/maldi-ms-pipeline/src
     strategy:
       fail-fast: false
       matrix:
