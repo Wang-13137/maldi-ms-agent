@@ -31,7 +31,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ./maldi-ms-pipeline
+          # maldi-ms-pipeline 通过 conftest 的 sys.path 注入（无需 pip 安装，
+          # 避免触发其 pyproject 的 setuptools 配置问题），只需上面 checkout 到同级目录
           pip install -e .
 
       - name: Run tests
