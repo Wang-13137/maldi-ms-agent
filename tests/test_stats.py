@@ -45,7 +45,7 @@ def test_permutation_detects_no_signal(base_cfg):
 def test_permutation_detects_strong_signal(base_cfg):
     """强真实信号（effect_size=2.0）→ 应当显著。"""
     s = _session(base_cfg, effect_size=2.0, seed=5)
-    res = permutation_test(s.X, s.y, s.cfg, n_perm=30, seed=0)
+    res = permutation_test(s.X, s.y, s.cfg, n_perm=200, seed=0)
     assert res.significant, (
         f"强信号数据上应当显著：p={res.p_value:.4f}, auc={res.observed_auc:.4f}"
     )
