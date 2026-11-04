@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from .budget import Budget, BudgetState
 from .llm import LLM, Message, ScriptedLLM
 from .prompts import build_system_prompt, build_user_prompt
 from .session import AnalysisSession
@@ -207,6 +208,8 @@ class RunResult:
     #: 轨迹，评测 JSON 的格式必须保持稳定，新增字段只能走旁路。
     trace: Optional[TraceSummary] = None
     recorder: Optional[TraceRecorder] = None
+    #: M8 运行时预算账本。同样刻意不进 to_dict()，评测 JSON 字段集保持冻结。
+    budget_state: Optional[BudgetState] = None
 
     # ---------------------------------------------------------- 评测用快捷查询
 
@@ -273,6 +276,8 @@ def run_react(
     max_parse_retries: int = 2,
     verbose: bool = False,
     recorder: Optional[TraceRecorder] = None,
+    budget: Optional[Budget] = None,
+    clock: Optional[Callable[[], float]] = None,
 ) -> RunResult:
     """跑一轮 ReAct。
 
@@ -280,6 +285,8 @@ def run_react(
     - ``strict`` 控制**提示词层**口径（见 prompts.build_system_prompt）。
       两者独立，正是消融设计想要的。
     - ``recorder`` 可注入自定义 TraceRecorder；不传则默认创建一个（默认脱敏）。
+    - ``budget`` 为 M8 的硬预算（token / 墙钟时间 / 工具调用数 / 步数）。
+      传 ``None`` 时行为与 M5/M7 完全一致；``clock`` 只用于确定性测试。
     """
     tools = build_tools(session, honest=honest, with_permutation=with_permutation)
     by_name = {t.name: t for t in tools}
@@ -295,6 +302,13 @@ def run_react(
         honest=honest, with_permutation=with_permutation,
     )
 
+    # M8 硬预算：默认关闭，开启后账本随 span 一起导出。
+    if budget is None:
+        bstate = None
+    else:
+        bstate = BudgetState(budget, clock=clock) if clock is not None else BudgetState(budget)
+    run.budget_state = bstate
+
     # 结构化可观测：instrumented from day one，但默认只记元数据、不记内容。
     rec = recorder if recorder is not None else TraceRecorder()
     run.recorder = rec
@@ -308,13 +322,25 @@ def run_react(
             "app.ablation.honest": honest,
             "app.ablation.with_permutation": with_permutation,
             "app.budget.max_steps": max_steps,
+            "app.budget.hard_enabled": bstate is not None,
         }
     )
+    if bstate is not None:
+        for k, v in bstate.budget.to_dict().items():
+            root.attributes[f"app.budget.limit.{k}"] = v
 
     parse_fail_streak = 0
     last_sig = ""
     repeat_streak = 0
     for i in range(max_steps):
+        # 每轮开始先查预算（墙钟/步数），避免在已经超支后还发起一次 LLM 调用。
+        if bstate is not None:
+            bstate.tick_step()
+            reason = bstate.check()
+            if reason:
+                run.stopped_reason = "budget_exceeded"
+                run.error = reason
+                break
         try:
             with rec.child("chat " + llm.name, "LLM", **{
                 "gen_ai.operation.name": "chat",
@@ -327,6 +353,13 @@ def run_react(
                 "gen_ai.usage.output_tokens": usage.output_tokens,
                 "gen_ai.response.finish_reasons": [llm.last_finish_reason],
             })
+            if bstate is not None:
+                bstate.add_usage(usage)
+                reason = bstate.check()
+                if reason:
+                    run.stopped_reason = "budget_exceeded"
+                    run.error = reason
+                    break
         except Exception as exc:  # noqa: BLE001
             run.stopped_reason = "error"
             run.error = f"LLM 调用失败：{exc}"
@@ -351,6 +384,8 @@ def run_react(
             continue
 
         parse_fail_streak = 0
+        if bstate is not None:
+            bstate.tick_tool()
         tool = by_name.get(name)
         if tool is None:
             obs = (
@@ -417,6 +452,15 @@ def run_react(
             run.conclusion = res.payload.get("conclusion", "")
             run.stopped_reason = "finish"
             break
+
+        # 工具调用后复检（token 在 LLM 返回时已记，这里覆盖时间/调用数）。
+        # finish 成功时已提前 break，正常收尾不算超预算。
+        if bstate is not None:
+            reason = bstate.check()
+            if reason:
+                run.stopped_reason = "budget_exceeded"
+                run.error = reason
+                break
     else:
         run.stopped_reason = "max_steps"
         run.error = f"达到步数上限 {max_steps}，未给出结论"
@@ -425,7 +469,11 @@ def run_react(
         "app.run.stopped_reason": run.stopped_reason,
         "app.run.n_steps": run.n_steps,
         "app.run.finished": run.finished,
+        "app.budget.exceeded": run.stopped_reason == "budget_exceeded",
     })
+    if bstate is not None:
+        for k, v in bstate.snapshot().items():
+            root.attributes[f"app.budget.{k}"] = v
     rec.finish_root("ERROR" if run.stopped_reason == "error" else "OK")
     run.trace = rec.summary(n_steps=run.n_steps, stopped_reason=run.stopped_reason)
     return run

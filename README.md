@@ -1,10 +1,10 @@
 # maldi-ms-agent
 
 [![CI](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-91%20passing-brightgreen)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-116%20passing-brightgreen)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
 [![license](https://img.shields.io/github/license/Wang-13137/maldi-ms-agent)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/Wang-13137/maldi-ms-agent/releases)
+[![version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/Wang-13137/maldi-ms-agent/releases)
 [![eval gate](https://img.shields.io/badge/eval--gate-offline--CI-brightgreen)](.github/workflows/ci.yml)
 
 让智能体自主执行 MALDI-TOF 质谱判别分析，并用**扰动评测**验证它不会虚报结论。
@@ -149,7 +149,7 @@ Action:  finish(conclusion=...)
 ```bash
 pip install -e .
 pip install -e ../maldi-ms-pipeline
-pytest -q                     # 91 项测试（含"无信号数据必须判证据不足"）
+pytest -q                     # 116 项测试（含"无信号数据必须判证据不足"）
 pytest -q -m "not slow"       # 跳过需要跑完整合成流水线的部分，约 3 秒
 ```
 
@@ -328,8 +328,9 @@ p 更大。引用数字时应说明用的是哪种方案。
 | M3 | Agent 层：ReAct 循环 + 提示词 + 双口径开关 | ✅ 离线链路已跑通 |
 | M4 | 扰动任务集：基线 + 零效应 + 批次混杂 + 参数诱惑，含判据 | ✅ |
 | M5 | 评测：4 组消融 × 任务集 + 显著性检验 | ✅ glm-4-flash 实测 **64 条**（4 组 × 4 任务 × 4 seed）；A vs C 显著（McNemar p=0.0010）。**多模型未做** |
-| M6 | 文档与开源 | ✅ 已开源（GitHub Actions CI 跑通 91 项测试，3.10/3.11/3.12 矩阵） |
+| M6 | 文档与开源 | ✅ 已开源（GitHub Actions CI 跑通 116 项测试，3.10/3.11/3.12 矩阵） |
 | M7 | 企业级工程化：OTel GenAI 可观测 + 默认脱敏 + 离线行为门禁进 CI | ✅ 见第八节；`v0.3.0` |
+| M8 | MCP 工具服务（会话隔离 / 最小权限 / 出进程脱敏）+ token·时间·调用数硬熔断 | ✅ 见第九节；`v0.4.0` |
 
 ## 八、企业级 Agent 工程化（M7）
 
@@ -385,7 +386,7 @@ print(run.trace.to_dict())                       # 成本 / 延迟 / 工具错�
 ### 8.3 评测进 CI：行为门禁不是装饰
 
 `scripts/eval_gate.py` 把「不能虚报」这类硬约束变成退出码，在 GitHub Actions 里作为独立
-步骤运行（离线 `RuleBasedLLM` + 合成数据，不需要 API Key、不联网）。8 条检查：
+步骤运行（离线 `RuleBasedLLM` + 合成数据，不需要 API Key、不联网）。10 条检查：
 
 | 类别 | 检查 | 性质 |
 |---|---|---|
@@ -396,6 +397,8 @@ print(run.trace.to_dict())                       # 成本 / 延迟 / 工具错�
 | 合规 | 默认脱敏，span 中无内容型属性 | 硬红线 |
 | 可观测 | OTLP 导出合法、父子关系闭合 | 结构 |
 | 兼容 | `to_dict()` 评测 JSON 字段集未漂移 | 回归 |
+| 预算 | 极小 token 预算必须熔断，且不得产生结论 | 硬约束（M8） |
+| 兼容 | 不传 `budget` 时不得出现熔断，M5 行为不变 | 回归（M8） |
 | **自检** | **注入一个直接虚报的坏 Agent，必须被拦下** | 门禁有效性 |
 
 最后一条最要紧：一个永远绿灯的门禁等于没有门禁，自检失败会整体判失败。
@@ -403,30 +406,82 @@ print(run.trace.to_dict())                       # 成本 / 延迟 / 工具错�
 避免把「说了哪句话」当成质量指标。
 
 ```bash
-python scripts/eval_gate.py     # 8/8 才返回 0，产物 reports/eval_gate.json
+python scripts/eval_gate.py     # 10/10 才返回 0，产物 reports/eval_gate.json
 ```
 
 规则 Agent 不代表真实模型水平，门禁结果**不得引用为项目结论**；对外可引用的仍是
 64 条真实实测（见第五节）。
 
-### 8.4 边界：这一版**没有**做什么
+### 8.4 边界：M7 当时**没有**做什么
 
-没做的不写进简历、不写进面试说辞：
+M8（`v0.4.0`）已补上 MCP 工具服务与 token / 时间硬熔断，见第九节；
+下面这些**到 M8 之后仍未做**，不写进简历、不写进面试说辞：
 
-- 没有 MCP 工具服务（工具仍是进程内函数，未做跨框架 / 跨模型复用）；
-- 没有服务化 API、SSE 流式输出、水平扩展或状态持久化 / checkpoint；
+- 没有服务化 HTTP API、SSE 流式输出、水平扩展或状态持久化 / checkpoint（MCP 是 stdio 单进程）；
 - 没有 LLM-as-judge 在线评测、生产流量采样与漂移告警；
 - 没有 human-in-the-loop 审批闸门（本项目工具只读，不涉及不可逆写操作）；
 - 没有多模型回归（仍是单模型，见 M5 的统计交代）；
-- 没有 token / 时间硬熔断，目前只有 `max_steps` 步数预算与解析失败重试上限。
+- 没有跨租户配额与限流（预算只在单次 run 内生效）。
 
 ### 8.5 面试一句话版
 
 > 「我把评测从一次性实验做成了工程闭环：Agent 每次跑都产出对齐 OpenTelemetry GenAI
-> 语义约定的 span 树，默认只记元数据、不记谱数据；prompt 或工具一改，CI 里的 8 条
+> 语义约定的 span 树，默认只记元数据、不记谱数据；prompt 或工具一改，CI 里的 10 条
 > 行为门禁就会重跑，其中还故意注入一个虚报 Agent 来证明门禁真的能拦住东西。
 > 单元测试证明函数能跑，行为门禁证明 Agent 不会虚报。」
 
-## 九、许可
+## 九、工具服务化与运行时预算（M8，v0.4.0）
+
+第八节解决「看得见、管得住」。M8 补上企业级接入最常问的两件事：
+**工具怎么被别的框架调用**、**跑飞了怎么停下来**。
+
+### 9.1 MCP 工具服务：有状态流水线的会话隔离
+
+`src/maldi_ms_agent/mcp_server.py` 实现 MCP 的 stdio 传输 + JSON-RPC 2.0
+（`initialize` / `notifications/initialized` / `ping` / `tools/list` / `tools/call`），
+零第三方依赖；`scripts/run_mcp_server.py` 可直接配到任意支持 MCP 的客户端。
+
+与 `medical-rag` W6 的**无状态**检索工具服务不同，质谱流水线是有状态的：
+十个工具共享一份 `AnalysisSession`，前一步的产物是后一步的输入。所以重点不是帧格式，
+而是这三条：
+
+| 要求 | 做法 |
+|---|---|
+| 会话隔离 | 每个 `sessionId` 一份独立 `AnalysisSession` 与工具集；`OrderedDict` 做 LRU，超过 `max_sessions` 淘汰最旧，避免内存无限增长 |
+| 最小权限 | 默认只暴露 9 个分析工具；`load_dataset` **不在**白名单——服务启动时绑定合成数据集，客户端无法借协议让服务读取任意本地目录 |
+| 默认脱敏 | 工具只回汇总统计文本；`structuredContent` 出进程前过 `sanitize_payload`，长数组 / 矩阵裁成摘要、未知对象降级成类型名；工具异常走 `isError` 结果帧，不打断连接 |
+
+```bash
+python scripts/run_mcp_server.py --once '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+### 9.2 运行时预算硬熔断
+
+`src/maldi_ms_agent/budget.py` 把原来唯一的 `max_steps` 扩成四类硬预算：
+token 总量 / 墙钟时间 / 工具调用数 / 步数。每轮循环开始查时间与步数，LLM 返回后
+累加 token，工具调用后累加次数；任一项超限立即 `stopped_reason="budget_exceeded"`，
+`error` 写明「哪一类、用了多少、上限多少」，用量与限额写进 `app.budget.*` span 属性
+随 OTLP 一起导出。
+
+两个刻意的设计：
+
+- **超预算时不让模型再总结一句**。最后一次发言机会也是最后一次虚报机会，熔断要确定地停。
+- **`budget=None` 时行为与 M5/M7 完全一致**，并写进 CI 门禁做回归；`to_dict()` 字段集冻结，
+  四组消融的逐格比对格式不漂移。
+
+### 9.3 门禁第一次跑就抓出的真缺口
+
+M8 门禁第一次跑红了：离线 `RuleBasedLLM` 没有记录 token usage，M7 的 token 埋点在
+CI 路径上恒为 0，token 预算因此永远不会触发。修法是给它补确定性的字符数估算
+（与 `ScriptedLLM` 同口径，仅用于验证埋点链路，**不得当作成本报告**）。
+门禁能抓出自己依赖链上的缺口，这本身就是它该有的样子。
+
+### 9.4 面试一句话版
+
+> 「工具层我按 MCP 暴露成标准协议，但质谱流水线是有状态的，所以重点不是帧格式，
+> 而是会话隔离、工具白名单和出进程前的脱敏；运行时再加 token / 时间 / 调用数三类硬预算，
+> 超了就确定地停、不给模型最后一次虚报机会。所有新字段都走 span 旁路，评测 JSON 一格没动。」
+
+## 十、许可
 
 MIT（见 ``LICENSE``）。真实队列数据与由此产生的特征矩阵不在许可范围内，也不随仓分发。

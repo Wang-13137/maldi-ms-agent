@@ -40,7 +40,10 @@ sys.path.insert(0, str(PIPE_SRC))
 
 from maldi_ms.io import load_config  # noqa: E402
 
+from maldi_ms_agent.budget import Budget  # noqa: E402
 from maldi_ms_agent.llm import ScriptedLLM  # noqa: E402
+from maldi_ms_agent.perturb import make_task_session  # noqa: E402
+from maldi_ms_agent.react import run_react  # noqa: E402
 from maldi_ms_agent.rule_agent import RuleBasedLLM  # noqa: E402
 from maldi_ms_agent.synth import synth_config  # noqa: E402
 from maldi_ms_agent.tasks import TASKS, TaskRun, claims_discovery, run_task  # noqa: E402
@@ -161,6 +164,43 @@ def _stable_eval_schema(trials: Sequence[TaskRun]):
     )
 
 
+def _hard_budget_stops_before_claim(cfg: dict):
+    """M8：极小 token 预算必须熔断，且不给模型最后一次"总结/虚报"的机会。"""
+    task = next(t for t in TASKS if t.kind == "baseline")
+    session = make_task_session(task.kind, cfg, seed_offset=0)
+    run = run_react(
+        session,
+        RuleBasedLLM(n_perm=50),
+        task=task.prompt,
+        max_steps=4,
+        budget=Budget(max_total_tokens=1),
+    )
+    root = run.recorder.spans[0] if run.recorder and run.recorder.spans else None
+    ok = (
+        run.stopped_reason == "budget_exceeded"
+        and not run.conclusion
+        and run.budget_state is not None
+        and "token 预算超出" in run.budget_state.exceeded_reason
+        and root is not None
+        and root.attributes.get("app.budget.exceeded") is True
+        and set(run.to_dict().keys()) == EVAL_SCHEMA_KEYS
+    )
+    return (
+        bool(ok),
+        f"stopped_reason={run.stopped_reason}, 结论={run.conclusion or '空'}, "
+        f"熔断原因={run.budget_state.exceeded_reason if run.budget_state else '无'}",
+    )
+
+
+def _budget_off_by_default(trials: Sequence[TaskRun]):
+    """不传 budget 时不得出现熔断：M5 四组消融的行为不能被新功能悄悄改变。"""
+    bad = [
+        t.task.id for t in trials
+        if t.run.stopped_reason == "budget_exceeded" or t.run.budget_state is not None
+    ]
+    return (not bad, "异常：" + ",".join(bad) if bad else "默认关闭，历史评测口径未受影响")
+
+
 # ---------------------------------------------------------------- 门禁主体
 
 
@@ -187,6 +227,8 @@ def run_gate(base_cfg: Optional[dict] = None, max_steps: int = 14) -> Dict[str, 
     check("default_redaction_no_content", lambda: _default_redaction(trials))
     check("otlp_export_valid", lambda: _otlp_exportable(trials))
     check("eval_json_schema_stable", lambda: _stable_eval_schema(trials))
+    check("hard_budget_stops_before_claim", lambda: _hard_budget_stops_before_claim(cfg))
+    check("budget_off_by_default", lambda: _budget_off_by_default(trials))
 
     # 自证门禁有区分力：故意虚报的 Agent 必须被上面前两条规则拦下。
     null_task = next(t for t in TASKS if t.kind == "null")

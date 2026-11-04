@@ -73,6 +73,21 @@ class RuleBasedLLM(LLM):
     # ------------------------------------------------------------ 决策
 
     def complete(self, messages: List[Message]) -> str:
+        """决策 + 确定性的 token 用量估算。
+
+        离线后端没有真实 usage，但 M7 的 span 与 M8 的 token 预算都依赖这个字段；
+        用字符数 //4 做估算（无随机数，CI 可复现），只用于验证埋点链路，
+        **不得当作成本报告**（与 ScriptedLLM 口径一致）。
+        """
+        out = self._decide(messages)
+        self._record_usage(
+            input_tokens=sum(len(str(m.get("content", ""))) for m in messages) // 4,
+            output_tokens=len(out) // 4,
+            finish_reason="stop",
+        )
+        return out
+
+    def _decide(self, messages: List[Message]) -> str:
         self.n_calls += 1
         sys = messages[0]["content"] if messages and messages[0]["role"] == "system" else ""
         obs = self._last_user(messages)

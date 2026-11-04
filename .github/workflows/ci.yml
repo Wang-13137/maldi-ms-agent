@@ -45,3 +45,10 @@ jobs:
         # 行为门禁与 Python 版本无关；单测矩阵已覆盖版本差异，这里只跑一次
         if: matrix.python-version == '3.12'
         run: python scripts/eval_gate.py --out reports/eval_gate.json
+
+      - name: MCP stdio protocol smoke test
+        # 验证协议帧能起来、默认工具白名单生效（load_dataset 不应暴露）
+        if: matrix.python-version == '3.12'
+        run: |
+          python scripts/run_mcp_server.py --once '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' > /tmp/mcp_tools.json
+          python -c 'import json;d=json.load(open("/tmp/mcp_tools.json",encoding="utf-8"));n=[t["name"] for t in d["result"]["tools"]];assert "permutation_test" in n and "load_dataset" not in n,n;print("MCP tools/list OK:",n)'

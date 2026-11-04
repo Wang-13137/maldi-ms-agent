@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maldi-ms-agent"
-version = "0.3.0"
+version = "0.4.0"
 description = "让智能体自主执行 MALDI-TOF 判别分析，并用扰动评测验证它不会虚报结论"
 readme = "README.md"
 requires-python = ">=3.10"
