@@ -101,3 +101,21 @@ def test_tampered_report_is_refused(tmp_path, monkeypatch) -> None:
     tampered.write_text(json.dumps(manifest), encoding="utf-8")
     monkeypatch.setattr(governance, "MANIFEST_PATH", tampered)
     assert governance.main(["--out", str(tmp_path / "x.json")]) == 2
+
+
+def test_crlf_artifact_hashes_same_as_lf(tmp_path) -> None:
+    """同一个文件在 CRLF 与 LF 下必须得到同一个身份。
+
+    踩过的坑：本地 Windows 检出是 CRLF、CI 是 LF，按原始字节算哈希会让
+    "本地全绿、CI 退出码 2"——内容寻址最典型的跨平台事故。
+    """
+    lf = tmp_path / "lf.json"
+    crlf = tmp_path / "crlf.json"
+    lf.write_bytes(b'{"k": 1}\n{"k": 2}\n')
+    crlf.write_bytes(b'{"k": 1}\r\n{"k": 2}\r\n')
+    assert governance._sha256(lf) == governance._sha256(crlf)
+
+    # 真实产物同样要过：报告里有 60 万字节，足以覆盖分块读取的边界情况
+    report_crlf = tmp_path / "report_crlf.json"
+    report_crlf.write_bytes(governance.REPORT_PATH.read_bytes().replace(b"\n", b"\r\n"))
+    assert governance._sha256(report_crlf) == governance._sha256(governance.REPORT_PATH)

@@ -1,0 +1,4 @@
+# 参与 sha256 内容寻址的冻结产物：换行符必须跨平台一致，
+# 否则同一份语料在 Windows 与 Linux 上会得到两个身份。
+eval/released/*.json text eol=lf
+eval/corpus/*.json text eol=lf

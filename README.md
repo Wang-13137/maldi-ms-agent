@@ -1,7 +1,7 @@
 # maldi-ms-agent
 
 [![CI](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-130%20passing-brightgreen)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-131%20passing-brightgreen)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
 [![license](https://img.shields.io/github/license/Wang-13137/maldi-ms-agent)](LICENSE)
 [![version](https://img.shields.io/badge/version-0.6.0-blue)](https://github.com/Wang-13137/maldi-ms-agent/releases)
@@ -149,7 +149,7 @@ Action:  finish(conclusion=...)
 ```bash
 pip install -e .
 pip install -e ../maldi-ms-pipeline
-pytest -q                     # 130 项测试（含"无信号数据必须判证据不足"）
+pytest -q                     # 131 项测试（含"无信号数据必须判证据不足"）
 pytest -q -m "not slow"       # 跳过需要跑完整合成流水线的部分，约 3 秒
 ```
 
@@ -328,7 +328,7 @@ p 更大。引用数字时应说明用的是哪种方案。
 | M3 | Agent 层：ReAct 循环 + 提示词 + 双口径开关 | ✅ 离线链路已跑通 |
 | M4 | 扰动任务集：基线 + 零效应 + 批次混杂 + 参数诱惑，含判据 | ✅ |
 | M5 | 评测：4 组消融 × 任务集 + 显著性检验 | ✅ glm-4-flash 实测 **64 条**（4 组 × 4 任务 × 4 seed）；A vs C 显著（McNemar p=0.0010）。**多模型未做** |
-| M6 | 文档与开源 | ✅ 已开源（GitHub Actions CI 3.10/3.11/3.12 矩阵，当前 130 项测试全过） |
+| M6 | 文档与开源 | ✅ 已开源（GitHub Actions CI 3.10/3.11/3.12 矩阵，当前 131 项测试全过） |
 | M7 | 企业级工程化：OTel GenAI 可观测 + 默认脱敏 + 离线行为门禁进 CI | ✅ 见第八节；`v0.3.0` |
 | M8 | MCP 工具服务（会话隔离 / 最小权限 / 出进程脱敏）+ token·时间·调用数硬熔断 | ✅ 见第九节；`v0.4.0` |
 | M9 | 断点续跑：每次 run 附带可序列化检查点，预算熔断后可从断点恢复、不重放已完成步骤 | ✅ 见第十节；`v0.5.0` |

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sqlite3
 import sys
 import tempfile
@@ -64,12 +63,30 @@ def _ensure_platform() -> None:
 
 
 def _sha256(path: Path) -> str:
+    """按 LF 计算文件哈希。
+
+    跨平台内容寻址的坑：同一份 JSON 在 Windows 上是 CRLF、在 Linux 上被 git 存成 LF，
+    按原始字节算会得到两个身份，于是"本地通过、CI 红"。这里统一归一化换行符，
+    再配合 `.gitattributes` 把这两个目录锁成 eol=lf。
+    """
     import hashlib
 
     h = hashlib.sha256()
+    tail = b""
     with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
+        while True:
+            chunk = f.read(1 << 20)
+            if not chunk:
+                break
+            data = tail + chunk
+            # \r 恰好落在块边界时留到下一轮，避免把一个 CRLF 拆成两半漏掉
+            if data.endswith(b"\r"):
+                tail, data = b"\r", data[:-1]
+            else:
+                tail = b""
+            h.update(data.replace(b"\r\n", b"\n"))
+    if tail:
+        h.update(tail)
     return h.hexdigest()
 
 

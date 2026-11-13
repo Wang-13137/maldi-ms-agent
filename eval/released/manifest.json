@@ -1,9 +1,9 @@
 {
-  "note": "冻结产物：改了就必须升版本号并改 manifest，否则治理流水线会拒绝启动。",
+  "note": "冻结产物：参与 sha256 校验，换行符一律按 LF 计算（CRLF 归一化）。改了内容必须升版本号并同步 manifest，否则治理流水线拒绝启动。",
   "artifacts": [
     {
       "path": "eval/released/agent_glm4flash_64_v1.json",
-      "sha256": "fe2b68cae4c0b5bd271fe7e8a32d06e84ff378aee36ddf3d60c003cc3dc9e68c",
+      "sha256": "23e73293d5f892a180ad3a8e29be49043685785d4cc98485685c5731c94dcf01",
       "model": "glm-4-flash",
       "n_runs": 64,
       "n_perm": 30,
@@ -16,7 +16,7 @@
     },
     {
       "path": "eval/corpus/cases.json",
-      "sha256": "0dbec1991b7995fd8892f61009a135737bc3045f04e0c6ef60bc8c5871ebae64",
+      "sha256": "57c234757ec7bc9c3c8bff904a5b6f5ace1d5c5507fa749501995e8946b697e3",
       "n_cases": 16
     }
   ]

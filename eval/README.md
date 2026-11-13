@@ -36,6 +36,7 @@ MALDI_PLATFORM_SRC=/path/to/maldi-ms-platform/src python eval/governance.py
 | `released/agent_glm4flash_64_v1.json` | 冻结的真实报告：glm-4-flash，4 臂 × 16 条 = 64 条 |
 | `released/manifest.json` | 上述两个产物的 sha256。被改一个字节，流水线拒绝启动（退出码 2） |
 | `policy.json` | 门禁策略：基线臂、候选臂、alpha、通过率下限、必须调用的工具 |
+| `.gitattributes`（仓库根） | 把上面几个文件锁成 `eol=lf`：参与哈希的文件换行符一变，身份就变了 |
 | `governance.py` | 流水线本体：登记 → 入库 → 配对比较 → 三类门禁 → 审计 → 出报告 |
 
 ## 流水线跑出来的东西（本地与 CI 一致）
@@ -60,6 +61,15 @@ D_loose_prompt   11/16  rate=0.6875
 3. **过程门禁与结果门禁分开**：C 组没调用置换检验，即使它的结论碰巧对，也该被拦。
 4. **真实数据只出元数据**：`uti-urine-real37` 以 `classification=real` 登记，
    `payload` 导出在库层直接抛错，且这次"被拒"本身写进审计日志（只追加，库层禁止改删）。
+
+## 一个必须记下来的坑：换行符会毁掉内容寻址
+
+第一版在 Windows 上全部通过，推到 CI 直接退出码 2。原因：JSON 在 Windows 上是 CRLF，
+git 存成 LF，按原始字节算 sha256 就是两个不同的身份——**本地绿、CI 红**。
+
+现在两层保险：`.gitattributes` 把 `eval/released/*.json` 与 `eval/corpus/*.json` 锁成
+`eol=lf`；校验函数按 LF 归一化（并处理 `\r` 恰好落在读块边界的情况）。测试里有一条
+专门把同一份内容写成 CRLF 与 LF，断言两者哈希相等。
 
 ## 它**没有**做什么（写在前面，省得被问）
 
