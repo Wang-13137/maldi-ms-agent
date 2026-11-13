@@ -67,6 +67,14 @@ jobs:
           repository: Wang-13137/maldi-ms-platform
           path: maldi-ms-platform
 
+      - name: Checkout maldi-ms-pipeline (tests/conftest.py 依赖)
+        # 跑 tests/ 下任何测试都要它：conftest 在收集阶段就会校验路径，
+        # 少了它整个测试会话直接报错，不是跳过。
+        uses: actions/checkout@v4
+        with:
+          repository: Wang-13137/maldi-ms-pipeline
+          path: maldi-ms-pipeline
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -86,6 +94,7 @@ jobs:
 
       - name: Governance tests
         env:
+          MALDI_PIPELINE_SRC: ${{ github.workspace }}/maldi-ms-pipeline/src
           MALDI_PLATFORM_SRC: ${{ github.workspace }}/maldi-ms-platform/src
           MALDI_PLATFORM_ACTOR: ci
         run: pytest tests/test_governance.py -q
