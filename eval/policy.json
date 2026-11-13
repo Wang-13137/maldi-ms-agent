@@ -1,0 +1,20 @@
+{
+  "suite": "agent-perturbation-16",
+  "baseline_arm": "A_full",
+  "candidate_arm": "C_no_tool",
+  "alpha": 0.05,
+  "min_pass_rate": 0.5,
+  "require_tool": {
+    "metric": "perm_called_rate",
+    "threshold": 1.0
+  },
+  "expect": {
+    "candidate_significantly_worse": true,
+    "gate_candidate_against_baseline": "fail",
+    "gate_baseline_against_candidate": "pass",
+    "gate_candidate_require_tool": "fail",
+    "gate_baseline_require_tool": "pass",
+    "min_pass_baseline": "pass",
+    "real_payload_export": "denied"
+  }
+}

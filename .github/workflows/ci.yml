@@ -52,3 +52,49 @@ jobs:
         run: |
           python scripts/run_mcp_server.py --once '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' > /tmp/mcp_tools.json
           python -c 'import json;d=json.load(open("/tmp/mcp_tools.json",encoding="utf-8"));n=[t["name"] for t in d["result"]["tools"]];assert "permutation_test" in n and "load_dataset" not in n,n;print("MCP tools/list OK:",n)'
+
+  governance:
+    # 评测与数据治理：数据版本登记 → 报告入库 → 配对比较 → 三类门禁 → 审计留痕。
+    # 用仓库里冻结的真实报告（glm-4-flash 64 条），不调任何外部 API，结论必须与本地一致。
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout agent
+        uses: actions/checkout@v4
+
+      - name: Checkout maldi-ms-platform (治理依赖，零第三方运行时依赖)
+        uses: actions/checkout@v4
+        with:
+          repository: Wang-13137/maldi-ms-platform
+          path: maldi-ms-platform
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install -e .
+
+      - name: Governance pipeline
+        env:
+          MALDI_PLATFORM_SRC: ${{ github.workspace }}/maldi-ms-platform/src
+          MALDI_PLATFORM_ACTOR: ci
+        run: python eval/governance.py --out reports/governance.json
+
+      - name: Governance tests
+        env:
+          MALDI_PLATFORM_SRC: ${{ github.workspace }}/maldi-ms-platform/src
+          MALDI_PLATFORM_ACTOR: ci
+        run: pytest tests/test_governance.py -q
+
+      - name: Upload governance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: governance-report
+          path: reports/governance.json
+          if-no-files-found: warn
+

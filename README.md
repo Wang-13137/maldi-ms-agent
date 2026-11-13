@@ -1,10 +1,10 @@
 # maldi-ms-agent
 
 [![CI](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-122%20passing-brightgreen)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-130%20passing-brightgreen)](https://github.com/Wang-13137/maldi-ms-agent/actions/workflows/ci.yml)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
 [![license](https://img.shields.io/github/license/Wang-13137/maldi-ms-agent)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/Wang-13137/maldi-ms-agent/releases)
+[![version](https://img.shields.io/badge/version-0.6.0-blue)](https://github.com/Wang-13137/maldi-ms-agent/releases)
 [![eval gate](https://img.shields.io/badge/eval--gate-offline--CI-brightgreen)](.github/workflows/ci.yml)
 
 让智能体自主执行 MALDI-TOF 质谱判别分析，并用**扰动评测**验证它不会虚报结论。
@@ -149,7 +149,7 @@ Action:  finish(conclusion=...)
 ```bash
 pip install -e .
 pip install -e ../maldi-ms-pipeline
-pytest -q                     # 122 项测试（含"无信号数据必须判证据不足"）
+pytest -q                     # 130 项测试（含"无信号数据必须判证据不足"）
 pytest -q -m "not slow"       # 跳过需要跑完整合成流水线的部分，约 3 秒
 ```
 
@@ -328,10 +328,11 @@ p 更大。引用数字时应说明用的是哪种方案。
 | M3 | Agent 层：ReAct 循环 + 提示词 + 双口径开关 | ✅ 离线链路已跑通 |
 | M4 | 扰动任务集：基线 + 零效应 + 批次混杂 + 参数诱惑，含判据 | ✅ |
 | M5 | 评测：4 组消融 × 任务集 + 显著性检验 | ✅ glm-4-flash 实测 **64 条**（4 组 × 4 任务 × 4 seed）；A vs C 显著（McNemar p=0.0010）。**多模型未做** |
-| M6 | 文档与开源 | ✅ 已开源（GitHub Actions CI 3.10/3.11/3.12 矩阵，当前 122 项测试全过） |
+| M6 | 文档与开源 | ✅ 已开源（GitHub Actions CI 3.10/3.11/3.12 矩阵，当前 130 项测试全过） |
 | M7 | 企业级工程化：OTel GenAI 可观测 + 默认脱敏 + 离线行为门禁进 CI | ✅ 见第八节；`v0.3.0` |
 | M8 | MCP 工具服务（会话隔离 / 最小权限 / 出进程脱敏）+ token·时间·调用数硬熔断 | ✅ 见第九节；`v0.4.0` |
 | M9 | 断点续跑：每次 run 附带可序列化检查点，预算熔断后可从断点恢复、不重放已完成步骤 | ✅ 见第十节；`v0.5.0` |
+| M10 | 评测与数据治理：内容哈希定数据版本、配对 McNemar、三类门禁与只追加审计，全部进 CI | ✅ 见第十一节；`v0.6.0` |
 
 ## 八、企业级 Agent 工程化（M7）
 
@@ -520,6 +521,43 @@ assert resumed.finished and resumed.n_steps > run.n_steps   # 接着跑完，不
 > 检查点，预算耗尽停下后能用更大预算从断点接着跑、不重放已完成步骤，所以硬停不是丢活，
 > 而是可恢复的暂停。」
 
-## 十一、许可
+## 十一、评测与数据治理（M10，v0.6.0）
+
+M5 的评测是"跑一遍、出一个数字"。数字本身没有问题，问题在它**离开上下文就没有意义**：
+换了语料还能比吗？差异是信号还是噪声？这一版跟上一版比，到底该不该发？
+
+M10 把这三个问题变成可执行的三步，代码在 `eval/`，CI 里是一个独立的 job：
+
+```bash
+python eval/governance.py --out reports/governance.json   # 退出码 0/1/2
+```
+
+**① 数据版本用内容哈希锚定**：语料目录按相对路径排序后逐文件 sha256，再对清单取哈希。
+换目录、换拷贝顺序，身份不变；改一个字节，身份立刻变。真实受试者数据（37 例）只登记
+元数据，`payload` 导出在库层直接抛错，且这次"被拒"本身进审计日志。
+
+**② 差异用配对检验判**：同一批 16 条 case 上跑的两个臂是配对的，直接比 `11/16` 与 `0/16`
+会丢掉配对信息。这里用 McNemar 精确检验，得到 p≈9.8e-4；比较结果同时给出"仅基线过 /
+仅候选过"的两格，让人能看出差距到底来自哪几道题。
+
+**③ 三类门禁决定能不能发**：通过率下限、相对基线不得**显著**回归、结论前必须调用工具。
+未通过一律退出码 1，可直接作 CI 步骤。门禁刻意不按"百分比掉了多少"来判——
+n=16 时掉 1 条就是 6.25%，按百分比拦会天天误报，最后没人看门禁。
+
+冻结产物（报告 + 语料）有 sha256 清单，被改一个字节流水线就拒绝启动（退出码 2）：
+不能让一份来路不明的报告继续产生结论。CI 跑的是仓库里那份真实报告（glm-4-flash 64 条），
+不调外部 API，所以**同一份输入在任何机器上得到同一个 p 值**。
+
+```
+A_full           11/16    C_no_tool        0/16
+仅基线过=11  仅候选过=0   p=0.0009765625
+门禁：候选 vs 基线 → 拦住（退出码 1）｜反向 → 放行
+审计：只追加，库层触发器禁止 UPDATE / DELETE
+```
+
+> 面试一句话版：「评测不是贴一个通过率，而是三件事：数据有身份、差异有检验、发版有门禁。
+> 我把这三件事写成了 CI 里的一个 job，失败就退出码 1。」
+
+## 十二、许可
 
 MIT（见 ``LICENSE``）。真实队列数据与由此产生的特征矩阵不在许可范围内，也不随仓分发。
