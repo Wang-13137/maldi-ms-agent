@@ -149,9 +149,13 @@ Action:  finish(conclusion=...)
 ```bash
 pip install -e .
 pip install -e ../maldi-ms-pipeline
+pip install -e ../maldi-ms-platform    # 治理测试要用；没装则这 9 项整体 skip
 pytest -q                     # 131 项测试（含"无信号数据必须判证据不足"）
 pytest -q -m "not slow"       # 跳过需要跑完整合成流水线的部分，约 3 秒
 ```
+
+`tests/test_governance.py` 那 9 项依赖平台库，所以在版本矩阵 job 里会被**整体 skip**（表现为 `122 passed, 1 skipped`）；
+CI 另有一个 `governance` job 会带着平台与流水线把这 9 项真跑一遍。跳过不等于放过，两边加起来才是 131。
 
 跑一轮 ReAct（离线，不需要任何 API Key）：
 
@@ -328,7 +332,7 @@ p 更大。引用数字时应说明用的是哪种方案。
 | M3 | Agent 层：ReAct 循环 + 提示词 + 双口径开关 | ✅ 离线链路已跑通 |
 | M4 | 扰动任务集：基线 + 零效应 + 批次混杂 + 参数诱惑，含判据 | ✅ |
 | M5 | 评测：4 组消融 × 任务集 + 显著性检验 | ✅ glm-4-flash 实测 **64 条**（4 组 × 4 任务 × 4 seed）；A vs C 显著（McNemar p=0.0010）。**多模型未做** |
-| M6 | 文档与开源 | ✅ 已开源（GitHub Actions CI 3.10/3.11/3.12 矩阵，当前 131 项测试全过） |
+| M6 | 文档与开源 | ✅ 已开源（GitHub Actions CI 3.10/3.11/3.12 矩阵 + 治理 job，当前 131 项测试全过） |
 | M7 | 企业级工程化：OTel GenAI 可观测 + 默认脱敏 + 离线行为门禁进 CI | ✅ 见第八节；`v0.3.0` |
 | M8 | MCP 工具服务（会话隔离 / 最小权限 / 出进程脱敏）+ token·时间·调用数硬熔断 | ✅ 见第九节；`v0.4.0` |
 | M9 | 断点续跑：每次 run 附带可序列化检查点，预算熔断后可从断点恢复、不重放已完成步骤 | ✅ 见第十节；`v0.5.0` |
